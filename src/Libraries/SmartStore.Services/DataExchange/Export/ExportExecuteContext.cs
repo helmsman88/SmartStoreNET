@@ -23,6 +23,11 @@ namespace SmartStore.Services.DataExchange.Export
 		}
 
 		/// <summary>
+		/// Identifier of the export profile
+		/// </summary>
+		public int ProfileId { get; internal set; }
+
+		/// <summary>
 		/// Provides the data to be exported
 		/// </summary>
 		public IExportDataSegmenterConsumer DataSegmenter { get; set; }
@@ -48,7 +53,12 @@ namespace SmartStore.Services.DataExchange.Export
 		public dynamic Language { get; internal set; }
 
 		/// <summary>
-		/// Projection data
+		/// Filter settings
+		/// </summary>
+		public ExportFilter Filter { get; internal set; }
+
+		/// <summary>
+		/// Projection settings
 		/// </summary>
 		public ExportProjection Projection { get; internal set; }
 
@@ -153,7 +163,7 @@ namespace SmartStore.Services.DataExchange.Export
 		{
 			++RecordsFailed;
 
-			Log.Error("Error while processing record with id {0}: {1}".FormatInvariant(entityId, exception.ToAllMessages()), exception);
+			Log.ErrorFormat(exception, "Error while processing record with id {0}", entityId);
 
 			if (IsMaxFailures)
 				_result.LastError = exception.ToString();

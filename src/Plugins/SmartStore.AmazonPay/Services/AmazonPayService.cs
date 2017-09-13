@@ -1,14 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Web;
-using System.Web.Mvc;
-using System.Xml.Serialization;
-using Autofac;
+﻿using Autofac;
 using OffAmazonPaymentsService;
 using SmartStore.AmazonPay.Api;
 using SmartStore.AmazonPay.Extensions;
@@ -19,11 +9,9 @@ using SmartStore.Core.Data;
 using SmartStore.Core.Domain.Common;
 using SmartStore.Core.Domain.Customers;
 using SmartStore.Core.Domain.Directory;
-using SmartStore.Core.Domain.Logging;
 using SmartStore.Core.Domain.Orders;
 using SmartStore.Core.Domain.Payments;
 using SmartStore.Core.Domain.Shipping;
-using SmartStore.Core.Domain.Tasks;
 using SmartStore.Core.Localization;
 using SmartStore.Core.Logging;
 using SmartStore.Services;
@@ -35,10 +23,20 @@ using SmartStore.Services.Messages;
 using SmartStore.Services.Orders;
 using SmartStore.Services.Payments;
 using SmartStore.Services.Tasks;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Web;
+using System.Web.Mvc;
+using System.Xml.Serialization;
 
 namespace SmartStore.AmazonPay.Services
 {
-	public class AmazonPayService : IAmazonPayService
+    public class AmazonPayService : IAmazonPayService
 	{
 		private readonly IAmazonPayApi _api;
 		private readonly HttpContextBase _httpContext;
@@ -51,7 +49,6 @@ namespace SmartStore.AmazonPay.Services
 		private readonly ICustomerService _customerService;
 		private readonly IPriceFormatter _priceFormatter;
 		private readonly OrderSettings _orderSettings;
-		private readonly RewardPointsSettings _rewardPointsSettings;
 		private readonly IOrderService _orderService;
 		private readonly IRepository<Order> _orderRepository;
 		private readonly IOrderProcessingService _orderProcessingService;
@@ -70,7 +67,6 @@ namespace SmartStore.AmazonPay.Services
 			ICustomerService customerService,
 			IPriceFormatter priceFormatter,
 			OrderSettings orderSettings,
-			RewardPointsSettings rewardPointsSettings,
 			IOrderService orderService,
 			IRepository<Order> orderRepository,
 			IOrderProcessingService orderProcessingService,
@@ -88,7 +84,6 @@ namespace SmartStore.AmazonPay.Services
 			_customerService = customerService;
 			_priceFormatter = priceFormatter;
 			_orderSettings = orderSettings;
-			_rewardPointsSettings = rewardPointsSettings;
 			_orderService = orderService;
 			_orderRepository = orderRepository;
 			_orderProcessingService = orderProcessingService;
@@ -172,13 +167,12 @@ namespace SmartStore.AmazonPay.Services
 				if (exception != null)
 				{
 					shortMessage = exception.Message;
-					fullMessage = exception.ToString();
 					exception.Dump();
 				}
 
 				if (shortMessage.HasValue())
 				{
-					Logger.InsertLog(LogLevel.Error, shortMessage, fullMessage.EmptyNull());
+					Logger.Error(exception, shortMessage);
 
 					if (notify)
 						_services.Notifier.Error(new LocalizedString(shortMessage));
@@ -197,7 +191,7 @@ namespace SmartStore.AmazonPay.Services
 
 				if (exception.GetErrorStrings(out shortMessage, out fullMessage))
 				{
-					Logger.InsertLog(LogLevel.Error, shortMessage, fullMessage);
+					Logger.Error(exception, shortMessage);
 
 					if (notify)
 						_services.Notifier.Error(new LocalizedString(shortMessage));
@@ -395,7 +389,7 @@ namespace SmartStore.AmazonPay.Services
 
 					if (checkoutState == null)
 					{
-						Logger.InsertLog(LogLevel.Warning, "Checkout state is null in AmazonPayService.ValidateAndInitiateCheckout!");
+						Logger.Warn("Checkout state is null in AmazonPayService.ValidateAndInitiateCheckout!");
 						model.Result = AmazonPayResultType.Redirect;
 						return model;
 					}
@@ -512,20 +506,6 @@ namespace SmartStore.AmazonPay.Services
 				}
 				else if (type == AmazonPayRequestType.Payment)
 				{
-					if (_rewardPointsSettings.Enabled && !model.IsRecurring)
-					{
-						int rewardPointsBalance = customer.GetRewardPointsBalance();
-						decimal rewardPointsAmountBase = _orderTotalCalculationService.ConvertRewardPointsToAmount(rewardPointsBalance);
-						decimal rewardPointsAmount = _currencyService.ConvertFromPrimaryStoreCurrency(rewardPointsAmountBase, currency);
-
-						if (rewardPointsAmount > decimal.Zero)
-						{
-							model.DisplayRewardPoints = true;
-							model.RewardPointsAmount = _priceFormatter.FormatPrice(rewardPointsAmount, true, false);
-							model.RewardPointsBalance = rewardPointsBalance;
-						}
-					}
-
 					_genericAttributeService.SaveAttribute<string>(customer, SystemCustomerAttributeNames.SelectedPaymentMethod, AmazonPayCore.SystemName, store.Id);
 
 					var client = new AmazonPayClient(settings);
@@ -557,15 +537,6 @@ namespace SmartStore.AmazonPay.Services
 				LogError(exc, notify: true);
 			}
 			return model;
-		}
-
-		public void ApplyRewardPoints(bool useRewardPoints)
-		{
-			if (_rewardPointsSettings.Enabled)
-			{
-				_genericAttributeService.SaveAttribute(_services.WorkContext.CurrentCustomer,
-					SystemCustomerAttributeNames.UseRewardPointsDuringCheckout, useRewardPoints, _services.StoreContext.CurrentStore.Id);
-			}
 		}
 
 		private string GetAuthorizationState(AmazonPayClient client, string authorizationId)
@@ -840,7 +811,7 @@ namespace SmartStore.AmazonPay.Services
 			}
 
 			if (errorId.HasValue())
-				Logger.InsertLog(LogLevel.Warning, T("Plugins.Payments.AmazonPay.OrderNotFound", errorId), "");
+				Logger.Warn(T("Plugins.Payments.AmazonPay.OrderNotFound", errorId));
 
 			return order;
 		}

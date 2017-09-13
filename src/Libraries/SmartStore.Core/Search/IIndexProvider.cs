@@ -1,15 +1,16 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Collections.Generic;
 
 namespace SmartStore.Core.Search
 {
 	public interface IIndexProvider
 	{
 		/// <summary>
-		/// Enumerates the names of all existing indexes. 
+		/// Gets a value indicating whether the index provider is active
+		/// </summary>
+		bool IsActive { get; }
+
+		/// <summary>
+		/// Enumerates the names of all EXISTING indexes. 
 		/// A name is required for the <see cref="GetIndexStore(string)"/> method.
 		/// </summary>
 		IEnumerable<string> EnumerateIndexes();
@@ -17,8 +18,10 @@ namespace SmartStore.Core.Search
 		/// <summary>
 		/// Creates an empty document
 		/// </summary>
+		/// <param name="id">The primary key of the indexed entity</param>
+		/// <param name="documentType">Identifies the type of a document, can be <c>null</c></param>
 		/// <returns>The document instance</returns>
-		IIndexDocument CreateDocument(int id);
+		IIndexDocument CreateDocument(int id, SearchDocumentType? documentType);
 
 		/// <summary>
 		/// Returns a provider specific implementation of the <see cref="IIndexStore"/> interface
@@ -38,6 +41,6 @@ namespace SmartStore.Core.Search
 		/// <param name="store">The index store</param>
 		/// <param name="query">The query to execute against the store</param>
 		/// <returns>The search engine instance</returns>
-		ISearchEngine GetSearchEngine(IIndexStore store, SearchQuery query);
+		ISearchEngine GetSearchEngine(IIndexStore store, ISearchQuery query);
 	}
 }

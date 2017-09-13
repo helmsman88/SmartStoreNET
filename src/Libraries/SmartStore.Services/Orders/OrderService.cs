@@ -96,16 +96,10 @@ namespace SmartStore.Services.Orders
                         where orderIds.Contains(o.Id)
                         select o;
             var orders = query.ToList();
-            //sort by passed identifiers
-            var sortedOrders = new List<Order>();
-            foreach (int id in orderIds)
-            {
-                var order = orders.Find(x => x.Id == id);
-                if (order != null)
-                    sortedOrders.Add(order);
-            }
-            return sortedOrders;
-        }
+
+			// sort by passed identifier sequence
+			return orders.OrderBySequence(orderIds).ToList();
+		}
 
         public virtual Order GetOrderByNumber(string orderNumber)
         {
@@ -344,8 +338,6 @@ namespace SmartStore.Services.Orders
             if (order == null)
                 throw new ArgumentNullException("order");
 
-			order.UpdatedOnUtc = DateTime.UtcNow;
-
             _orderRepository.Update(order);
 
             //event notifications
@@ -506,7 +498,7 @@ namespace SmartStore.Services.Orders
 
 		public virtual Multimap<int, OrderItem> GetOrderItemsByOrderIds(int[] orderIds)
 		{
-			Guard.ArgumentNotNull(() => orderIds);
+			Guard.NotNull(orderIds, nameof(orderIds));
 
 			var query =
 				from x in _orderItemRepository.TableUntracked.Expand(x => x.Product)

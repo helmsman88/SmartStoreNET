@@ -217,7 +217,7 @@ namespace SmartStore.Services.Orders
 				var msg = string.Concat(T(messageKey, order.GetOrderNumber()), " ", string.Join(" ", errors));
 
 				_orderService.AddOrderNote(order, msg);
-				_logger.InsertLog(LogLevel.Error, msg, msg);
+				_logger.Error(msg);
 			}
 		}
 
@@ -551,8 +551,12 @@ namespace SmartStore.Services.Orders
                 if (!processPaymentRequest.IsRecurringPayment)
                 {
                     //load shopping cart
-                    if (processPaymentRequest.ShoppingCartItems.Count > 0)
-                        cart = processPaymentRequest.ShoppingCartItems;
+                    if (processPaymentRequest.ShoppingCartItemIds.Count > 0)
+                    {
+                        cart = customer.GetCartItems(ShoppingCartType.ShoppingCart, processPaymentRequest.StoreId)
+                            .Where(x => processPaymentRequest.ShoppingCartItemIds.Contains(x.Item.Id))
+                            .ToList();
+                    }
                     else
                         cart = customer.GetCartItems(ShoppingCartType.ShoppingCart, processPaymentRequest.StoreId);
 
@@ -1056,8 +1060,6 @@ namespace SmartStore.Services.Orders
                             ShippingMethod = shippingMethodName,
                             ShippingRateComputationMethodSystemName = shippingRateComputationMethodSystemName,
                             VatNumber = vatNumber,
-							CreatedOnUtc = utcNow,
-							UpdatedOnUtc = utcNow,
                             CustomerOrderComment = extraData.ContainsKey("CustomerComment") ? extraData["CustomerComment"] : ""
                         };
 
@@ -1178,9 +1180,11 @@ namespace SmartStore.Services.Orders
 								_productService.AdjustInventory(sc, true);
                             }
 
-                            //clear shopping cart
-                            if (!processPaymentRequest.IsMultiOrder)
-                                cart.ToList().ForEach(sci => _shoppingCartService.DeleteShoppingCartItem(sci.Item, false));
+							//clear shopping cart
+							if (!processPaymentRequest.IsMultiOrder)
+							{
+								cart.ToList().ForEach(sci => _shoppingCartService.DeleteShoppingCartItem(sci.Item, false));
+							}
                         }
                         else
                         {
@@ -1364,7 +1368,7 @@ namespace SmartStore.Services.Orders
 						//reset checkout data
                         if (!processPaymentRequest.IsRecurringPayment && !processPaymentRequest.IsMultiOrder)
 						{
-							_customerService.ResetCheckoutData(customer, processPaymentRequest.StoreId, clearCouponCodes: true, clearCheckoutAttributes: true);
+							_customerService.ResetCheckoutData(customer, processPaymentRequest.StoreId, clearCouponCodes: true, clearCheckoutAttributes: true, clearRewardPoints: true);
 						}
 
 						// check for generic attributes to be inserted automatically
@@ -1422,10 +1426,10 @@ namespace SmartStore.Services.Orders
 					}
                 }
             }
-            catch (Exception exc)
+            catch (Exception ex)
             {
-                _logger.Error(exc.Message, exc);
-                result.AddError(exc.Message);
+                _logger.Error(ex);
+                result.AddError(ex.Message);
             }
 
 			if (result.Errors.Count > 0)
@@ -1647,7 +1651,7 @@ namespace SmartStore.Services.Orders
             _shipmentService.UpdateShipment(shipment);
 
             //check whether we have more items to ship
-            if (order.HasItemsToAddToShipment() || order.HasItemsToShip())
+            if (order.CanAddItemsToShipment() || order.HasItemsToDispatch())
                 order.ShippingStatusId = (int)ShippingStatus.PartiallyShipped;
             else
                 order.ShippingStatusId = (int)ShippingStatus.Shipped;
@@ -1690,7 +1694,7 @@ namespace SmartStore.Services.Orders
             shipment.DeliveryDateUtc = DateTime.UtcNow;
             _shipmentService.UpdateShipment(shipment);
 
-			if (!order.HasItemsToAddToShipment() && !order.HasItemsToShip() && !order.HasItemsToDeliver())
+			if (!order.CanAddItemsToShipment() && !order.HasItemsToDispatch() && !order.HasItemsToDeliver())
 			{
 				order.ShippingStatusId = (int)ShippingStatus.Delivered;
 			}
@@ -2502,6 +2506,7 @@ namespace SmartStore.Services.Orders
                 var daysPassed = (DateTime.UtcNow - order.CreatedOnUtc).TotalDays;
                 numberOfDaysReturnRequestAvailableValid = (daysPassed - _orderSettings.NumberOfDaysReturnRequestAvailable) < 0;
             }
+
             return numberOfDaysReturnRequestAvailableValid;
         }
 
@@ -2557,7 +2562,7 @@ namespace SmartStore.Services.Orders
 
 		public virtual Shipment AddShipment(Order order, string trackingNumber, Dictionary<int, int> quantities)
 		{
-			Guard.ArgumentNotNull(() => order);
+			Guard.NotNull(order, nameof(order));
 
 			Shipment shipment = null;
 			decimal? totalWeight = null;
@@ -2568,7 +2573,7 @@ namespace SmartStore.Services.Orders
 					continue;
 
 				//ensure that this product can be shipped (have at least one item to ship)
-				var maxQtyToAdd = orderItem.GetTotalNumberOfItemsCanBeAddedToShipment();
+				var maxQtyToAdd = orderItem.GetItemsCanBeAddedToShipmentCount();
 				if (maxQtyToAdd <= 0)
 					continue;
 

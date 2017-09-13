@@ -3,13 +3,11 @@ using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
 using System.Data.Entity;
+using System.Data.Entity.Core.Objects;
 using System.Data.Entity.Infrastructure;
-using System.Data.Entity.Validation;
 using System.Data.SqlClient;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using Microsoft.SqlServer.Management.Common;
 using Microsoft.SqlServer.Management.Smo;
 using SmartStore.Core;
@@ -23,11 +21,9 @@ namespace SmartStore.Data
 	/// Object context
 	/// </summary>
 	[DbConfigurationType(typeof(SmartDbConfiguration))]
-    public abstract class ObjectContextBase : DbContext, IDbContext
+    public abstract partial class ObjectContextBase : DbContext, IDbContext
     {
 		private static bool? s_isSqlServer2012OrHigher = null;
-
-        #region Ctor
 
 		/// <summary>
 		/// Parameterless constructor for tooling support, e.g. EF Migrations.
@@ -43,87 +39,25 @@ namespace SmartStore.Data
 			this.HooksEnabled = true;
 			this.AutoCommitEnabled = true;
             this.Alias = null;
-			this.EventPublisher = NullEventPublisher.Instance;
-        }
+			this.DbHookHandler = NullDbHookHandler.Instance;
 
-        #endregion
-
-		#region Properties
-
-		public IEventPublisher EventPublisher
-		{
-			get;
-			set;
+			if (DataSettings.DatabaseIsInstalled())
+			{
+				// listen to 'ObjectMaterialized' for load hooking
+				((IObjectContextAdapter)this).ObjectContext.ObjectMaterialized += ObjectMaterialized;
+			}
 		}
 
-		#endregion
-
-		#region Hooks
-
-		private readonly IList<DbEntityEntry> _hookedEntries = new List<DbEntityEntry>();
-
-		private void PerformPreSaveActions(out IList<DbEntityEntry> modifiedEntries, out HookedEntityEntry[] modifiedHookEntries)
+		private void ObjectMaterialized(object sender, ObjectMaterializedEventArgs e)
 		{
-			modifiedHookEntries = null;
+			var entity = e.Entity as BaseEntity;
+			if (entity == null)
+				return;
 
-			modifiedEntries = this.ChangeTracker.Entries()
-				.Where(x => x.State != System.Data.Entity.EntityState.Unchanged && x.State != System.Data.Entity.EntityState.Detached)
-				.Except(_hookedEntries)
-				.ToList();
+			var hookHandler = this.DbHookHandler;
+			var importantHooksOnly = !this.HooksEnabled && hookHandler.HasImportantLoadHooks();
 
-			// prevents stack overflow
-			_hookedEntries.AddRange(modifiedEntries);
-
-			var hooksEnabled = this.HooksEnabled && modifiedEntries.Any();
-			if (hooksEnabled)
-			{
-				modifiedHookEntries = modifiedEntries
-								.Select(x => new HookedEntityEntry
-								{
-									Entity = x.Entity,
-									PreSaveState = (SmartStore.Core.Data.EntityState)((int)x.State)
-								})
-								.ToArray();
-
-				// Regardless of validation (possible fixing validation errors too)
-				this.EventPublisher.Publish(new PreActionHookEvent { ModifiedEntries = modifiedHookEntries, RequiresValidation = false });
-			}
-
-			if (this.Configuration.ValidateOnSaveEnabled)
-			{
-				var results = from entry in this.ChangeTracker.Entries()
-							  where this.ShouldValidateEntity(entry)
-							  let validationResult = entry.GetValidationResult()
-							  where !validationResult.IsValid
-							  select validationResult;
-
-				if (results.Any())
-				{
-
-					var fail = new DbEntityValidationException(FormatValidationExceptionMessage(results), results);
-					//Debug.WriteLine(fail.Message, fail);
-					throw fail;
-				}
-			}
-
-			if (hooksEnabled)
-			{
-				this.EventPublisher.Publish(new PreActionHookEvent { ModifiedEntries = modifiedHookEntries, RequiresValidation = true });
-			}
-
-			modifiedEntries.Each(x => _hookedEntries.Remove(x));
-
-			IgnoreMergedData(modifiedEntries, true);
-		}
-
-		private void PerformPostSaveActions(IList<DbEntityEntry> modifiedEntries, HookedEntityEntry[] modifiedHookEntries)
-		{
-			IgnoreMergedData(modifiedEntries, false);
-
-			if (this.HooksEnabled && modifiedHookEntries != null && modifiedHookEntries.Any())
-			{
-				this.EventPublisher.Publish(new PostActionHookEvent { ModifiedEntries = modifiedHookEntries });
-			}
+			hookHandler.TriggerLoadHooks(entity, importantHooksOnly);
 		}
 
 		public bool HooksEnabled
@@ -132,11 +66,9 @@ namespace SmartStore.Data
 			set;
 		}
 
-        #endregion
+		#region IDbContext members
 
-        #region IDbContext members
-
-        public virtual string CreateDatabaseScript()
+		public virtual string CreateDatabaseScript()
         {
             return ((IObjectContextAdapter)this).ObjectContext.CreateDatabaseScript();
         }
@@ -257,7 +189,7 @@ namespace SmartStore.Data
         /// <returns>The result returned by the database after executing the command.</returns>
         public int ExecuteSqlCommand(string sql, bool doNotEnsureTransaction = false, int? timeout = null, params object[] parameters)
         {
-            Guard.ArgumentNotEmpty(sql, "sql");
+            Guard.NotEmpty(sql, "sql");
 
             int? previousTimeout = null;
             if (timeout.HasValue)
@@ -284,7 +216,7 @@ namespace SmartStore.Data
 		/// <summary>Executes sql by using SQL-Server Management Objects which supports GO statements.</summary>
 		public int ExecuteSqlThroughSmo(string sql)
 		{
-			Guard.ArgumentNotEmpty(sql, "sql");
+			Guard.NotEmpty(sql, "sql");
 
 			int result = 0;
 
@@ -322,69 +254,87 @@ namespace SmartStore.Data
             get
             {
                 return this.ChangeTracker.Entries()
-                           .Where(x => x.State != System.Data.Entity.EntityState.Unchanged && x.State != System.Data.Entity.EntityState.Detached)
+                           .Where(x => x.State > System.Data.Entity.EntityState.Unchanged)
                            .Any();
             }
         }
 
 		public IDictionary<string, object> GetModifiedProperties(BaseEntity entity)
 		{
+			return GetModifiedProperties(this.Entry(entity));
+		}
+
+		private IDictionary<string, object> GetModifiedProperties(DbEntityEntry entry)
+		{
 			var props = new Dictionary<string, object>();
 
-			var entry = this.Entry(entity);
-
 			// be aware of the entity state. you cannot get modified properties for detached entities.
-			if (entry.State != System.Data.Entity.EntityState.Detached)
+			if (entry.State == System.Data.Entity.EntityState.Modified)
 			{
-				var modifiedProperties = from p in entry.CurrentValues.PropertyNames
-										 let prop = entry.Property(p)
-										 where prop.IsModified
-										 select prop;
+				var detectChangesEnabled = this.Configuration.AutoDetectChangesEnabled;
+				var mergeable = entry.Entity as IMergedData;
+				var mergedProps = mergeable?.MergedDataValues;
+				var ignoreMerge = false;
 
-				foreach (var prop in modifiedProperties)
+				if (mergeable != null)
 				{
-					props.Add(prop.Name, prop.OriginalValue);
+					ignoreMerge = mergeable.MergedDataIgnore;
+					mergeable.MergedDataIgnore = true;
+				}
+
+				try
+				{
+					var modifiedProperties = from p in entry.CurrentValues.PropertyNames
+											 let prop = entry.Property(p)
+											 // prop.IsModified seems to return true even if values are equal
+											 where PropIsModified(prop, detectChangesEnabled, mergedProps)
+											 select prop;
+
+					foreach (var prop in modifiedProperties)
+					{
+						props.Add(prop.Name, prop.OriginalValue);
+					}
+				}
+				finally
+				{
+					if (mergeable != null)
+						mergeable.MergedDataIgnore = ignoreMerge;
 				}
 			}
+
+			//System.Diagnostics.Debug.WriteLine("GetModifiedProperties: " + String.Join(", ", props.Select(x => x.Key)));
 
 			return props;
 		}
 
-        public override int SaveChanges()
-        {
-			IList<DbEntityEntry> modifiedEntries;
-			HookedEntityEntry[] modifiedHookEntries;
-			PerformPreSaveActions(out modifiedEntries, out modifiedHookEntries);
-
-			// SAVE NOW!!!
-			bool validateOnSaveEnabled = this.Configuration.ValidateOnSaveEnabled;
-			this.Configuration.ValidateOnSaveEnabled = false;
-            int result = base.SaveChanges();
-            this.Configuration.ValidateOnSaveEnabled = validateOnSaveEnabled;
-
-			PerformPostSaveActions(modifiedEntries, modifiedHookEntries);
-
-            return result;
-        }
-
-		public override Task<int> SaveChangesAsync()
+		private static bool PropIsModified(DbPropertyEntry prop, bool detectChangesEnabled, IDictionary<string, object> mergedProps)
 		{
-			IList<DbEntityEntry> modifiedEntries;
-			HookedEntityEntry[] modifiedHookEntries;
-			PerformPreSaveActions(out modifiedEntries, out modifiedHookEntries);
+			var propIsModified = prop.IsModified;
 
-			// SAVE NOW!!!
-			bool validateOnSaveEnabled = this.Configuration.ValidateOnSaveEnabled;
-			this.Configuration.ValidateOnSaveEnabled = false;
-			var result = base.SaveChangesAsync();
+			if (detectChangesEnabled && !propIsModified)
+				return false; // Perf
 
-			result.ContinueWith((t) =>
+			if (propIsModified && mergedProps != null && mergedProps.ContainsKey(prop.Name))
 			{
-				this.Configuration.ValidateOnSaveEnabled = validateOnSaveEnabled;
-				PerformPostSaveActions(modifiedEntries, modifiedHookEntries);
-			});
+				// EF "thinks" that prop has changed because merged value differs
+				return false;
+			}
 
-			return result;
+			// INFO: "CurrentValue" cannot be used for entities in the Deleted state.
+			// INFO: "OriginalValues" cannot be used for entities in the Added state.
+			return detectChangesEnabled 
+				? propIsModified
+				: !AreEqual(prop.CurrentValue, prop.OriginalValue);
+		}
+
+		private static bool AreEqual(object cur, object orig)
+		{
+			if (cur == null && orig == null)
+				return true;
+
+			return orig != null 
+				? orig.Equals(cur)
+				: cur.Equals(orig);
 		}
 
         // required for UoW implementation
@@ -463,7 +413,7 @@ namespace SmartStore.Data
 		/// Resolves the connection string from the <c>Settings.txt</c> file
 		/// </summary>
 		/// <returns>The connection string</returns>
-		/// <remarks>This helper is called from parameterless DbContext constructors which are required for EF tooling support.</remarks>
+		/// <remarks>This helper is called from parameterless DbContext constructors which are required for EF tooling support or during installation.</remarks>
 		public static string GetConnectionString()
 		{
 			if (DataSettings.Current.IsValid())
@@ -527,79 +477,56 @@ namespace SmartStore.Data
 
 		public int DetachEntities<TEntity>(bool unchangedEntitiesOnly = true) where TEntity : class
 		{
-			Func<DbEntityEntry, bool> predicate = x => 
+			return DetachEntities(o => o is TEntity, unchangedEntitiesOnly);
+		}
+
+		public int DetachEntities(Func<object, bool> predicate, bool unchangedEntitiesOnly = true)
+		{
+			Guard.NotNull(predicate, nameof(predicate));
+
+			Func<DbEntityEntry, bool> predicate2 = x =>
 			{
-				if (x.Entity is TEntity)
+				if (x.State > System.Data.Entity.EntityState.Detached && predicate(x.Entity))
 				{
-					if (x.State == System.Data.Entity.EntityState.Detached)
-						return false;
-
-					if (unchangedEntitiesOnly)
-						return x.State == System.Data.Entity.EntityState.Unchanged;
-
-					return true;
+					return unchangedEntitiesOnly 
+						? x.State == System.Data.Entity.EntityState.Unchanged
+						: true;
 				}
 
 				return false;
 			};
-			
-			var attachedEntities = this.ChangeTracker.Entries().Where(predicate).ToList();
+
+			var attachedEntities = this.ChangeTracker.Entries().Where(predicate2).ToList();
 			attachedEntities.Each(entry => entry.State = System.Data.Entity.EntityState.Detached);
 			return attachedEntities.Count;
 		}
 
 		public void ChangeState<TEntity>(TEntity entity, System.Data.Entity.EntityState newState) where TEntity : BaseEntity
 		{
-			Console.WriteLine("ChangeState ORIGINAL");
+			//Console.WriteLine("ChangeState ORIGINAL");
 			this.Entry(entity).State = newState;
 		}
 
 		public void ReloadEntity<TEntity>(TEntity entity) where TEntity : BaseEntity
 		{
-			this.Entry(entity).Reload();
-		}
+			var entry = this.Entry(entity);
 
-		private string FormatValidationExceptionMessage(IEnumerable<DbEntityValidationResult> results)
-        {
-            var sb = new StringBuilder();
-            sb.Append("Entity validation failed" + Environment.NewLine);
-
-            foreach (var res in results)
-            {
-                var baseEntity = res.Entry.Entity as BaseEntity;
-                sb.AppendFormat("Entity Name: {0} - Id: {0} - State: {1}",
-                    res.Entry.Entity.GetType().Name,
-                    baseEntity != null ? baseEntity.Id.ToString() : "N/A",
-                    res.Entry.State.ToString());
-                sb.AppendLine();
-
-                foreach (var validationError in res.ValidationErrors)
-                {
-                    sb.AppendFormat("\tProperty: {0} Error: {1}", validationError.PropertyName, validationError.ErrorMessage);
-                    sb.AppendLine();
-                }
-            }
-
-            return sb.ToString();
-        }
-
-		private void IgnoreMergedData(IList<DbEntityEntry> entries, bool ignore)
-		{
 			try
 			{
-				foreach (var entry in entries)
+				entry.Reload();
+			}
+			catch
+			{
+				// Can occur when entity has been detached in the meantime (for whatever fucking reasons)
+				if (entry.State == System.Data.Entity.EntityState.Detached)
 				{
-					var entityWithPossibleMergedData = entry.Entity as IMergedData;
-					if (entityWithPossibleMergedData != null)
-					{
-						entityWithPossibleMergedData.MergedDataIgnore = ignore;
-					}
+					entry.State = System.Data.Entity.EntityState.Unchanged;
+					entry.Reload();
 				}
 			}
-			catch { }
 		}
 
-        #endregion
+		#endregion
 
 		#region Nested classes
 
@@ -609,7 +536,7 @@ namespace SmartStore.Data
 
 			public DbContextTransactionWrapper(DbContextTransaction tx)
 			{
-				Guard.ArgumentNotNull(() => tx);
+				Guard.NotNull(tx, nameof(tx));
 
 				_tx = tx;
 			}

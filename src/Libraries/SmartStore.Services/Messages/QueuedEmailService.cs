@@ -56,7 +56,7 @@ namespace SmartStore.Services.Messages
      
         public virtual void InsertQueuedEmail(QueuedEmail queuedEmail)
         {
-			Guard.ArgumentNotNull(() => queuedEmail);
+			Guard.NotNull(queuedEmail, nameof(queuedEmail));
 
 			_queuedEmailRepository.Insert(queuedEmail);
 
@@ -79,7 +79,7 @@ namespace SmartStore.Services.Messages
 						}
 						catch (Exception exception)
 						{
-							Logger.Error(T("Admin.Media.ProviderFailedToSave", _storageProvider.Metadata.SystemName, "QueuedEmailService.InsertQueuedEmail"), exception);
+							Logger.Error(exception, T("Admin.Media.ProviderFailedToSave", _storageProvider.Metadata.SystemName, "QueuedEmailService.InsertQueuedEmail"));
 						}
 						finally
 						{
@@ -100,7 +100,7 @@ namespace SmartStore.Services.Messages
 
         public virtual void UpdateQueuedEmail(QueuedEmail queuedEmail)
         {
-			Guard.ArgumentNotNull(() => queuedEmail);
+			Guard.NotNull(queuedEmail, nameof(queuedEmail));
 
 			_queuedEmailRepository.Update(queuedEmail);
 
@@ -110,7 +110,7 @@ namespace SmartStore.Services.Messages
 
         public virtual void DeleteQueuedEmail(QueuedEmail queuedEmail)
         {
-			Guard.ArgumentNotNull(() => queuedEmail);
+			Guard.NotNull(queuedEmail, nameof(queuedEmail));
 
             _queuedEmailRepository.Delete(queuedEmail);
 
@@ -144,21 +144,13 @@ namespace SmartStore.Services.Messages
 
             var queuedEmails = query.ToList();
 
-            // sort by passed identifiers
-            var sortedQueuedEmails = new List<QueuedEmail>();
-
-            foreach (int id in queuedEmailIds)
-            {
-                var queuedEmail = queuedEmails.Find(x => x.Id == id);
-                if (queuedEmail != null)
-                    sortedQueuedEmails.Add(queuedEmail);
-            }
-            return sortedQueuedEmails;
-        }
+			// sort by passed identifier sequence
+			return queuedEmails.OrderBySequence(queuedEmailIds).ToList();
+		}
 
         public virtual IPagedList<QueuedEmail> SearchEmails(SearchEmailsQuery query)
         {
-			Guard.ArgumentNotNull(() => query);
+			Guard.NotNull(query, nameof(query));
             
             var q = _queuedEmailRepository.Table;
 
@@ -215,9 +207,9 @@ namespace SmartStore.Services.Messages
 				queuedEmail.SentOnUtc = DateTime.UtcNow;
 				result = true;
 			}
-			catch (Exception exc)
+			catch (Exception ex)
 			{
-				Logger.Error(string.Concat(T("Admin.Common.ErrorSendingEmail"), ": ", exc.Message), exc);
+				Logger.Error(ex, string.Concat(T("Admin.Common.ErrorSendingEmail"), ": ", ex.Message));
 			}
 			finally
 			{
@@ -320,7 +312,7 @@ namespace SmartStore.Services.Messages
 
 		public virtual void DeleteQueuedEmailAttachment(QueuedEmailAttachment attachment)
 		{
-			Guard.ArgumentNotNull(() => attachment);
+			Guard.NotNull(attachment, nameof(attachment));
 
 			// delete from storage
 			if (attachment.StorageLocation == EmailAttachmentStorageLocation.Blob)
@@ -335,7 +327,7 @@ namespace SmartStore.Services.Messages
 
 		public virtual byte[] LoadQueuedEmailAttachmentBinary(QueuedEmailAttachment attachment)
 		{
-			Guard.ArgumentNotNull(() => attachment);
+			Guard.NotNull(attachment, nameof(attachment));
 
 			if (attachment.StorageLocation == EmailAttachmentStorageLocation.Blob)
 			{

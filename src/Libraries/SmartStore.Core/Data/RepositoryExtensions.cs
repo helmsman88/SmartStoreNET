@@ -18,8 +18,8 @@ namespace SmartStore.Core.Data
         {
             foreach (var chunk in ids.Chunk())
             {
-                var query = rs.Table.Where(a => chunk.Contains(a.Id));
-                foreach (var item in query)
+                var items = rs.Table.Where(a => chunk.Contains(a.Id)).ToList();
+                foreach (var item in items)
                 {
                     yield return item;
                 }
@@ -42,7 +42,7 @@ namespace SmartStore.Core.Data
 
 		public static void DeleteRange<T>(this IRepository<T> rs, IEnumerable<int> ids) where T : BaseEntity
 		{
-			Guard.ArgumentNotNull(() => ids);
+			Guard.NotNull(ids, nameof(ids));
 
 			ids.Each(id => rs.Delete(id));
 		}

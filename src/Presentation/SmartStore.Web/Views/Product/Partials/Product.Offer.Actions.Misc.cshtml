@@ -1,0 +1,73 @@
+﻿@model ProductDetailsModel
+
+@using SmartStore.Web.Models.Catalog;
+@using SmartStore.Core.Domain.Orders;
+
+@{
+	if (Model.ActionItems.Count == 0)
+	{
+		return;
+	}
+
+	var primaryActions = Model.ActionItems.Values.Where(x => x.IsPrimary).OrderBy(x => x.Priority).ToList();
+	var actions = Model.ActionItems.Values.Where(x => !x.IsPrimary).OrderBy(x => x.Priority).ToList();
+}
+
+<div class="pd-actions-container">
+	@if (primaryActions.Count > 0)
+	{
+		<div class="pd-actions-primary">
+			@foreach (var action in primaryActions)
+			{
+				<a href="@action.Href" class="btn btn-@action.PrimaryActionColor btn-block @action.CssClass">
+					<i class="@action.IconCssClass"></i>
+					<span>@action.Title</span>
+				</a>
+			}
+		</div>
+	}
+
+	@if (actions.Count > 0)
+	{
+		<div class="row sm-gutters pd-actions">
+			@{
+				var colClass = "col";
+				if (actions.Count < 5)
+				{
+					colClass += "-" + 12 / actions.Count;
+				}
+
+				int i = 0;
+			}
+			@foreach (var action in actions)
+			{
+				i++;
+				var key = action.Key;
+				var isSpecial = key == "wishlist" || key == "compare";
+				<div class="@colClass pd-action-item">
+					@if (isSpecial)
+					{
+						<a data-href='@action.Href' @Html.Attr("data-form-selector", "#pd-form", key == "wishlist")
+						   title="@action.Tooltip"
+						   href="#"
+						   class="pd-action-link@(isSpecial ? " pd-action-link-special" : "") @action.CssClass"
+						   rel="nofollow"
+						   data-toggle="tooltip"
+						   data-type="@key"
+						   data-action="add">
+							<i class="pd-action-icon @action.IconCssClass"></i>
+							<span class="pd-action-label">@action.Title</span>
+						</a>
+					}
+					else
+					{
+						<a class="pd-action-link@(isSpecial ? " pd-action-link-special" : "") @(action.CssClass)" href="@action.Href" rel="nofollow" title="@action.Tooltip" data-toggle="tooltip">
+							<i class="pd-action-icon @action.IconCssClass"></i>
+							<span class="pd-action-label">@action.Title</span>
+						</a>
+					}
+				</div>
+			}
+		</div>
+	}
+</div>

@@ -117,7 +117,7 @@ namespace SmartStore.Services.Localization
             var localeStringResource = query.FirstOrDefault();
 
             if (localeStringResource == null && logIfNotFound)
-                _logger.Warning(string.Format("Resource string ({0}) not found. Language ID = {1}", resourceName, languageId));
+                _logger.Warn(string.Format("Resource string ({0}) not found. Language ID = {1}", resourceName, languageId));
 
             return localeStringResource;
         }
@@ -251,11 +251,11 @@ namespace SmartStore.Services.Localization
 				{
 					if (_notFoundLogCount < 50)
 					{
-						_logger.Warning(string.Format("Resource string ({0}) does not exist. Language ID = {1}", resourceKey, languageId));
+						_logger.Warn(string.Format("Resource string ({0}) does not exist. Language ID = {1}", resourceKey, languageId));
 					}
 					else if (_notFoundLogCount == 50)
 					{
-						_logger.Warning("Too many language resources do not exist (> 50). Stopped logging missing resources to prevent performance drop.");
+						_logger.Warn("Too many language resources do not exist (> 50). Stopped logging missing resources to prevent performance drop.");
 					}
 					
 					_notFoundLogCount++;
@@ -272,6 +272,7 @@ namespace SmartStore.Services.Localization
 					{
 						_defaultLanguageId = _languageService.GetDefaultLanguageId();
 					}
+
 					var defaultLangId = _defaultLanguageId.Value;
 					if (defaultLangId > 0 && defaultLangId != languageId)
 					{
@@ -598,7 +599,7 @@ namespace SmartStore.Services.Localization
 
         public virtual XmlDocument FlattenResourceFile(XmlDocument source)
         {
-            Guard.ArgumentNotNull(() => source);
+            Guard.NotNull(source, nameof(source));
 
             if (source.SelectNodes("//Children").Count == 0)
             {

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using SmartStore.Core.IO;
@@ -12,9 +13,9 @@ namespace SmartStore.Services.Media.Storage
 	[DisplayOrder(1)]
 	public class FileSystemMediaStorageProvider : IMediaStorageProvider, ISupportsMediaMoving
 	{
-		private readonly IFileSystem _fileSystem;
+		private readonly IMediaFileSystem _fileSystem;
 
-		public FileSystemMediaStorageProvider(IFileSystem fileSystem)
+		public FileSystemMediaStorageProvider(IMediaFileSystem fileSystem)
 		{
 			_fileSystem = fileSystem;
 		}
@@ -26,9 +27,14 @@ namespace SmartStore.Services.Media.Storage
 
 		protected string GetPicturePath(MediaItem media)
 		{
-			Guard.NotEmpty(media.Path, nameof(media.Path));
-
 			return _fileSystem.Combine(media.Path, media.GetFileName());
+		}
+
+		public Stream OpenRead(MediaItem media)
+		{
+			var file = _fileSystem.GetFile(GetPicturePath(media));
+
+			return file.Exists ? file.OpenRead() : null;
 		}
 
 		public byte[] Load(MediaItem media)
@@ -36,7 +42,6 @@ namespace SmartStore.Services.Media.Storage
 			Guard.NotNull(media, nameof(media));
 
 			var filePath = GetPicturePath(media);
-
 			return _fileSystem.ReadAllBytes(filePath) ?? new byte[0];
 		}
 
@@ -45,7 +50,6 @@ namespace SmartStore.Services.Media.Storage
 			Guard.NotNull(media, nameof(media));
 
 			var filePath = GetPicturePath(media);
-
 			return (await _fileSystem.ReadAllBytesAsync(filePath)) ?? new byte[0];
 		}
 
@@ -90,7 +94,6 @@ namespace SmartStore.Services.Media.Storage
 			foreach (var media in medias)
 			{
 				var filePath = GetPicturePath(media);
-
 				_fileSystem.DeleteFile(filePath);
 			}
 		}

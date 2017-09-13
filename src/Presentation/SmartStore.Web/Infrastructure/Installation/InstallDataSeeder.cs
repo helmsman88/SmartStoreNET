@@ -25,6 +25,7 @@ using SmartStore.Data.Setup;
 using SmartStore.Services.Common;
 using SmartStore.Services.Configuration;
 using SmartStore.Services.Localization;
+using SmartStore.Services.Media;
 using SmartStore.Services.Media.Storage;
 using SmartStore.Services.Security;
 using SmartStore.Services.Seo;
@@ -36,8 +37,9 @@ namespace SmartStore.Web.Infrastructure.Installation
 {
 	public partial class InstallDataSeeder : IDataSeeder<SmartObjectContext>
     {
-        #region Fields & Constants
+		#region Fields & Constants
 
+		private ILogger _logger;
 		private SmartObjectContext _ctx;
         private SeedDataConfiguration _config;
         private InvariantSeedData _data;
@@ -51,15 +53,15 @@ namespace SmartStore.Web.Infrastructure.Installation
 
         #region Ctor
 
-		public InstallDataSeeder(SeedDataConfiguration configuration)
+		public InstallDataSeeder(SeedDataConfiguration configuration, ILogger logger)
         {
-			Guard.ArgumentNotNull(() => configuration);
-
-			Guard.ArgumentNotNull(configuration.Language, "Language");
-			Guard.ArgumentNotNull(configuration.Data, "SeedData");
+			Guard.NotNull(configuration, nameof(configuration));
+			Guard.NotNull(configuration.Language, "Language");
+			Guard.NotNull(configuration.Data, "SeedData");
 
 			_config = configuration;
 			_data = configuration.Data;
+			_logger = logger;
         }
 
         #endregion Ctor
@@ -399,7 +401,7 @@ namespace SmartStore.Web.Infrastructure.Installation
 			if (!_config.StoreMediaInDB)
 			{
 				// All pictures have initially been stored in the DB. Move the binaries to disk.
-				var fileSystemStorageProvider = new FileSystemMediaStorageProvider(new LocalFileSystem());
+				var fileSystemStorageProvider = new FileSystemMediaStorageProvider(new MediaFileSystem());
 				var mediaStorages = _ctx.Set<MediaStorage>();
 
 				// pictures
@@ -500,7 +502,7 @@ namespace SmartStore.Web.Infrastructure.Installation
 					var rsOrder = new EfRepository<Order>(_ctx);
 					rs.AutoCommitEnabled = false;
 
-					_gaService = new GenericAttributeService(NullRequestCache.Instance, rs, NullEventPublisher.Instance, rsOrder);
+					_gaService = new GenericAttributeService(rs, NullEventPublisher.Instance, rsOrder);
 				}
 
 				return _gaService;
@@ -520,7 +522,7 @@ namespace SmartStore.Web.Infrastructure.Installation
 					rsResources.AutoCommitEnabled = false;
 
 					var storeMappingService = new StoreMappingService(NullCache.Instance, null, null, null);
-					var storeService = new StoreService(NullRequestCache.Instance, new EfRepository<Store>(_ctx), NullEventPublisher.Instance);
+					var storeService = new StoreService(new EfRepository<Store>(_ctx), NullEventPublisher.Instance);
 					var storeContext = new WebStoreContext(storeService, new WebHelper(null), null);
 
 					var locSettings = new LocalizationSettings();
@@ -555,7 +557,7 @@ namespace SmartStore.Web.Infrastructure.Installation
 
         public virtual void Seed(SmartObjectContext context)
         {
-			Guard.ArgumentNotNull(() => context);
+			Guard.NotNull(context, nameof(context));
 
 			_ctx = context;
 			_data.Initialize(_ctx);
@@ -597,10 +599,14 @@ namespace SmartStore.Web.Infrastructure.Installation
 
             if (_config.SeedSampleData)
             {
+				_logger.Info("Seeding sample data");
+
 				_config.ProgressMessageCallback("Progress.CreatingSampleData");
 
 				Populate("PopulateSpecificationAttributes", _data.SpecificationAttributes());
 				Populate("PopulateProductAttributes", _data.ProductAttributes());
+				Populate("PopulateProductAttributeOptionsSets", _data.ProductAttributeOptionsSets());
+				Populate("PopulateProductAttributeOptions", _data.ProductAttributeOptions());
 				Populate("PopulateCategories", PopulateCategories);
 				Populate("PopulateManufacturers", PopulateManufacturers);
 				Populate("PopulateProducts", PopulateProducts);
@@ -653,11 +659,14 @@ namespace SmartStore.Web.Infrastructure.Installation
 		{
 			try
 			{
+				_logger.DebugFormat("Populate: {0}", stage);
 				SaveRange(entities);
 			}
 			catch (Exception ex)
 			{
-				throw new SeedDataException(stage, ex);
+				var ex2 = new SeedDataException(stage, ex);
+				_logger.Error(ex2);
+				throw ex2;
 			}
 		}
 
@@ -665,11 +674,14 @@ namespace SmartStore.Web.Infrastructure.Installation
 		{
 			try
 			{
+				_logger.DebugFormat("Populate: {0}", stage);
 				populateAction();
 			}
 			catch (Exception ex)
 			{
-				throw new SeedDataException(stage, ex);
+				var ex2 = new SeedDataException(stage, ex);
+				_logger.Error(ex2);
+				throw ex2;
 			}
 		}
 

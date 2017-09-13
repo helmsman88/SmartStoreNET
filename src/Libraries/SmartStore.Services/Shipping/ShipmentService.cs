@@ -111,21 +111,16 @@ namespace SmartStore.Services.Shipping
 			var query = from o in _shipmentRepository.Table.Expand(x => x.Order)
                         where shipmentIds.Contains(o.Id)
                         select o;
+
             var shipments = query.ToList();
-            //sort by passed identifiers
-            var sortedOrders = new List<Shipment>();
-            foreach (int id in shipmentIds)
-            {
-                var shipment = shipments.Find(x => x.Id == id);
-                if (shipment != null)
-                    sortedOrders.Add(shipment);
-            }
-            return sortedOrders;
-        }
+
+			// sort by passed identifier sequence
+			return shipments.OrderBySequence(shipmentIds).ToList();
+		}
 
 		public virtual Multimap<int, Shipment> GetShipmentsByOrderIds(int[] orderIds)
 		{
-			Guard.ArgumentNotNull(() => orderIds);
+			Guard.NotNull(orderIds, nameof(orderIds));
 
 			var query =
 				from x in _shipmentRepository.TableUntracked.Expand(x => x.ShipmentItems)

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -12,19 +13,16 @@ using System.Threading.Tasks;
 using System.Web.Mvc;
 using Newtonsoft.Json;
 using SmartStore.Admin.Models.Common;
-using SmartStore.Collections;
 using SmartStore.Core;
-using SmartStore.Core.Async;
-using SmartStore.Core.Caching;
 using SmartStore.Core.Data;
 using SmartStore.Core.Domain.Common;
 using SmartStore.Core.Domain.Customers;
 using SmartStore.Core.Domain.Directory;
-using SmartStore.Core.Domain.Security;
 using SmartStore.Core.Infrastructure;
 using SmartStore.Core.Logging;
 using SmartStore.Core.Packaging;
 using SmartStore.Core.Plugins;
+using SmartStore.Data.Caching;
 using SmartStore.Services;
 using SmartStore.Services.Common;
 using SmartStore.Services.Customers;
@@ -36,6 +34,7 @@ using SmartStore.Services.Media;
 using SmartStore.Services.Payments;
 using SmartStore.Services.Security;
 using SmartStore.Services.Shipping;
+using SmartStore.Services.Tasks;
 using SmartStore.Utilities;
 using SmartStore.Web.Framework;
 using SmartStore.Web.Framework.Controllers;
@@ -49,8 +48,6 @@ namespace SmartStore.Admin.Controllers
     [AdminAuthorize]
     public class CommonController : AdminControllerBase
     {
-        #region Fields
-
         private readonly Lazy<IPaymentService> _paymentService;
         private readonly Lazy<IShippingService> _shippingService;
         private readonly Lazy<ICurrencyService> _currencyService;
@@ -63,18 +60,12 @@ namespace SmartStore.Admin.Controllers
         private readonly ILanguageService _languageService;
         private readonly ILocalizationService _localizationService;
         private readonly Lazy<IImageCache> _imageCache;
-        private readonly Lazy<SecuritySettings> _securitySettings;
-		private readonly Lazy<IMenuPublisher> _menuPublisher;
-        private readonly Lazy<IPluginFinder> _pluginFinder;
 		private readonly Lazy<IImportProfileService> _importProfileService;
 		private readonly IGenericAttributeService _genericAttributeService;
+		private readonly IDbCache _dbCache;
+		private readonly ITaskScheduler _taskScheduler;
 		private readonly ICommonServices _services;
-
-		private readonly static object s_lock = new object();
-
-        #endregion
-
-        #region Constructors
+		private readonly Lazy<ISiteMapService> _siteMapService;
 
         public CommonController(
 			Lazy<IPaymentService> paymentService,
@@ -89,12 +80,12 @@ namespace SmartStore.Admin.Controllers
             ILanguageService languageService,
 			ILocalizationService localizationService,
             Lazy<IImageCache> imageCache,
-			Lazy<SecuritySettings> securitySettings,
-			Lazy<IMenuPublisher> menuPublisher,
-            Lazy<IPluginFinder> pluginFinder,
 			Lazy<IImportProfileService> importProfileService,
 			IGenericAttributeService genericAttributeService,
-			ICommonServices services)
+			IDbCache dbCache,
+			ITaskScheduler taskScheduler,
+			ICommonServices services,
+			Lazy<ISiteMapService> siteMapService)
         {
             this._paymentService = paymentService;
             this._shippingService = shippingService;
@@ -108,17 +99,13 @@ namespace SmartStore.Admin.Controllers
             this._languageService = languageService;
             this._localizationService = localizationService;
             this._imageCache = imageCache;
-            this._securitySettings = securitySettings;
-            this._menuPublisher = menuPublisher;
-			this._pluginFinder = pluginFinder;
 			this._importProfileService = importProfileService;
             this._genericAttributeService = genericAttributeService;
+			this._dbCache = dbCache;
+			this._taskScheduler = taskScheduler;
 			this._services = services;
+			this._siteMapService = siteMapService;
         }
-
-        #endregion
-
-        #region Methods
 
         #region Navbar & Menu
 
@@ -140,126 +127,8 @@ namespace SmartStore.Admin.Controllers
         [ChildActionOnly]
         public ActionResult Menu()
         {
-			var cacheManager = _services.Cache;
-
-			var customerRolesIds = _services.WorkContext.CurrentCustomer.CustomerRoles.Where(x => x.Active).Select(x => x.Id).ToList();
-			string cacheKey = string.Format("pres:adminmenu:navigation-{0}-{1}", _services.WorkContext.WorkingLanguage.Id, string.Join(",", customerRolesIds));
-
-            var rootNode = cacheManager.Get(cacheKey, () =>
-            {
-				lock (s_lock) {
-					return PrepareAdminMenu();
-				}
-            });
-
+			var rootNode = _siteMapService.Value.GetRootNode("admin");
             return PartialView(rootNode);
-        }
-
-        private TreeNode<MenuItem> PrepareAdminMenu()
-        {
-            XmlSiteMap siteMap = new XmlSiteMap();
-			siteMap.LoadFrom("~/Administration/sitemap.config");
-            
-            var rootNode = ConvertSitemapNodeToMenuItemNode(siteMap.RootNode);
-
-			_menuPublisher.Value.RegisterMenus(rootNode, "admin");
-
-			// hide based on permissions
-            rootNode.Traverse(x => {
-                if (!x.IsRoot)
-                {
-					if (!MenuItemAccessPermitted(x.Value))
-                    {
-                        x.Value.Visible = false;
-                    }
-                }
-            });
-
-            // hide dropdown nodes when no child is visible
-			rootNode.Traverse(x =>
-			{
-				if (!x.IsRoot)
-				{
-					var item = x.Value;
-					if (!item.IsGroupHeader && !item.HasRoute())
-					{
-						if (!x.Children.Any(child => child.Value.Visible))
-						{
-							item.Visible = false;
-						}
-					}
-				}
-			});
-
-            return rootNode;
-        }
-
-        private TreeNode<MenuItem> ConvertSitemapNodeToMenuItemNode(SiteMapNode node)
-        {
-            var item = new MenuItem();
-            var treeNode = new TreeNode<MenuItem>(item);
-
-            if (node.RouteName.HasValue())
-            {
-                item.RouteName = node.RouteName;
-            }
-            else if (node.ActionName.HasValue() && node.ControllerName.HasValue())
-            {
-                item.ActionName = node.ActionName;
-                item.ControllerName = node.ControllerName;
-            }
-            else if (node.Url.HasValue())
-            {
-                item.Url = node.Url;
-            }
-            item.RouteValues = node.RouteValues;
-            
-            item.Visible = node.Visible;
-            item.Text = node.Title;
-            item.Attributes.Merge(node.Attributes);
-
-            if (node.Attributes.ContainsKey("permissionNames"))
-                item.PermissionNames = node.Attributes["permissionNames"] as string;
-
-            if (node.Attributes.ContainsKey("id"))
-                item.Id = node.Attributes["id"] as string;
-
-            if (node.Attributes.ContainsKey("resKey"))
-                item.ResKey = node.Attributes["resKey"] as string;
-
-			if (node.Attributes.ContainsKey("iconClass"))
-				item.Icon = node.Attributes["iconClass"] as string;
-
-            if (node.Attributes.ContainsKey("imageUrl"))
-                item.ImageUrl = node.Attributes["imageUrl"] as string;
-
-            if (node.Attributes.ContainsKey("isGroupHeader"))
-                item.IsGroupHeader = Boolean.Parse(node.Attributes["isGroupHeader"] as string);
-
-            // iterate children recursively
-            foreach (var childNode in node.ChildNodes)
-            {
-                var childTreeNode = ConvertSitemapNodeToMenuItemNode(childNode);
-                treeNode.Append(childTreeNode);
-            }
-            
-            return treeNode;
-        }
-
-        private bool MenuItemAccessPermitted(MenuItem item)
-        {
-            var result = true;
-
-			if (_securitySettings.Value.HideAdminMenuItemsBasedOnPermissions && item.PermissionNames.HasValue())
-            {
-				var permitted = item.PermissionNames.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Any(x => _services.Permissions.Authorize(x.Trim()));
-                if (!permitted)
-                {
-                    result = false;
-                }
-            }
-
-            return result;
         }
 
 		#endregion
@@ -351,7 +220,7 @@ namespace SmartStore.Admin.Controllers
 				}
 				catch (Exception ex)
 				{
-					Logger.Error("An error occurred while checking for update", ex);
+					Logger.Error(ex, "An error occurred while checking for update");
 					return noUpdateResult;
 				}
 			});
@@ -409,7 +278,9 @@ namespace SmartStore.Admin.Controllers
 			}
 		}
 
-        #endregion
+		#endregion
+
+		#region UI Helpers
 
 		[HttpPost]
 		public JsonResult SetSelectedTab(string navId, string tabId, string path)
@@ -423,7 +294,7 @@ namespace SmartStore.Admin.Controllers
 		}
 
 		[HttpPost]
-		public JsonResult SetGridState(string gridId, GridState state, string path)
+		public JsonResult SetGridState(string gridId, GridStateInfo.GridState state, string path)
 		{
 			if (gridId.HasValue() && state != null && path.HasValue())
 			{
@@ -433,26 +304,30 @@ namespace SmartStore.Admin.Controllers
 			return Json(new { Success = true });
 		}
 
-        public ActionResult SystemInfo()
+		#endregion
+
+		#region Maintenance
+
+		public ActionResult SystemInfo()
         {
             var model = new SystemInfoModel();
             model.AppVersion = SmartStoreVersion.CurrentFullVersion;
 
             try
             {
-                model.OperatingSystem = Environment.OSVersion.VersionString;
+                model.OperatingSystem = "{0} (x{1})".FormatInvariant(Environment.OSVersion.VersionString, Environment.Is64BitProcess ? "64" : "32");
             }
-            catch (Exception) { }
+            catch { }
             try
             {
                 model.AspNetInfo = RuntimeEnvironment.GetSystemVersion();
             }
-            catch (Exception) { }
+            catch { }
             try
             {
                 model.IsFullTrust = AppDomain.CurrentDomain.IsFullyTrusted.ToString();
             }
-            catch (Exception) { }
+            catch { }
 
             model.ServerTimeZone = TimeZone.CurrentTimeZone.StandardName;
             model.ServerLocalTime = DateTime.Now;
@@ -463,8 +338,8 @@ namespace SmartStore.Admin.Controllers
 			{
 				var mbSize = _services.DbContext.SqlQuery<decimal>("Select Sum(size)/128.0 From sysfiles").FirstOrDefault();
 				model.DatabaseSize = Convert.ToInt64(mbSize * 1024 *1024);
-				
-				model.UsedMemorySize = System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64;
+
+				model.UsedMemorySize = GetPrivateBytes();
 			}
 			catch {	}
 
@@ -488,7 +363,7 @@ namespace SmartStore.Admin.Controllers
 
             foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
-                model.LoadedAssemblies.Add(new SystemInfoModel.LoadedAssembly()
+                model.LoadedAssemblies.Add(new SystemInfoModel.LoadedAssembly
                 {
                     FullName =  assembly.FullName,
                     //we cannot use Location property in medium trust
@@ -498,12 +373,25 @@ namespace SmartStore.Admin.Controllers
             return View(model);
         }
 
+		private long GetPrivateBytes()
+		{
+			GC.Collect();
+			GC.WaitForPendingFinalizers();
+			GC.Collect();
+
+			var process = System.Diagnostics.Process.GetCurrentProcess();
+			process.Refresh();
+
+			return process.PrivateMemorySize64;
+		}
+
         public ActionResult Warnings()
         {
             var model = new List<SystemWarningModel>();
 			var store = _services.StoreContext.CurrentStore;
             
-            //store URL
+            // Store URL
+			// ====================================
 			var storeUrl = store.Url.EnsureEndsWith("/");
 			if (storeUrl.HasValue() && (storeUrl.IsCaseInsensitiveEqual(_services.WebHelper.GetStoreLocation(false)) || storeUrl.IsCaseInsensitiveEqual(_services.WebHelper.GetStoreLocation(true))))
 			{
@@ -522,7 +410,51 @@ namespace SmartStore.Admin.Controllers
 				});
 			}
 
-			// sitemap reachability
+			// TaskScheduler reachability
+			// ====================================
+			string taskSchedulerUrl = null;
+			try
+			{
+				taskSchedulerUrl = Path.Combine(_taskScheduler.BaseUrl.EnsureEndsWith("/"), "noop").Replace(Path.DirectorySeparatorChar, '/');
+				var request = WebHelper.CreateHttpRequestForSafeLocalCall(new Uri(taskSchedulerUrl));
+				request.Method = "HEAD";
+				request.Timeout = 5000;
+
+				using (var response = (HttpWebResponse)request.GetResponse())
+				{
+					var status = response.StatusCode;
+					var warningModel = new SystemWarningModel();
+					warningModel.Level = (status == HttpStatusCode.OK ? SystemWarningLevel.Pass : SystemWarningLevel.Fail);
+
+					if (status == HttpStatusCode.OK)
+					{
+						warningModel.Text = T("Admin.System.Warnings.TaskScheduler.OK");
+					}
+					else
+					{
+						warningModel.Text = T("Admin.System.Warnings.TaskScheduler.Fail", _taskScheduler.BaseUrl, status + " - " + status.ToString());
+					}
+
+					model.Add(warningModel);
+				}
+			}
+			catch (WebException exception)
+			{
+				var msg = T("Admin.System.Warnings.TaskScheduler.Fail", _taskScheduler.BaseUrl, exception.Message);
+
+				var xxx = T("Admin.System.Warnings.TaskScheduler.Fail");
+
+				model.Add(new SystemWarningModel
+				{
+					Level = SystemWarningLevel.Fail,
+					Text = msg
+				});
+
+				Logger.Error(exception, msg);
+			}
+
+			// Sitemap reachability
+			// ====================================
 			string sitemapUrl = null;
 			try
 			{
@@ -563,10 +495,11 @@ namespace SmartStore.Admin.Controllers
 					Text = T("Admin.System.Warnings.SitemapReachable.Wrong")
 				});
 
-				Logger.Warning(sitemapUrl.IsEmpty() ? "SitemapSEO" : sitemapUrl, exception);
+				Logger.Warn(exception, T("Admin.System.Warnings.SitemapReachable.Wrong"));
 			}
 
-            //primary exchange rate currency
+			// Primary exchange rate currency
+			// ====================================
 			var perCurrency = store.PrimaryExchangeRateCurrency;
             if (perCurrency != null)
             {
@@ -594,7 +527,8 @@ namespace SmartStore.Admin.Controllers
                 });
             }
 
-            //primary store currency
+			// Primary store currency
+			// ====================================
 			var pscCurrency = store.PrimaryStoreCurrency;
             if (pscCurrency != null)
             {
@@ -614,7 +548,8 @@ namespace SmartStore.Admin.Controllers
             }
 
 
-            //base measure weight
+			// Base measure weight
+			// ====================================
 			var bWeight = _measureService.Value.GetMeasureWeightById(_measureSettings.Value.BaseWeightId);
             if (bWeight != null)
             {
@@ -643,7 +578,8 @@ namespace SmartStore.Admin.Controllers
             }
 
 
-            //base dimension weight
+			// Base dimension weight
+			// ====================================
 			var bDimension = _measureService.Value.GetMeasureDimensionById(_measureSettings.Value.BaseDimensionId);
             if (bDimension != null)
             {
@@ -671,7 +607,8 @@ namespace SmartStore.Admin.Controllers
                 });
             }
 
-			// shipping rate coputation methods
+			// Shipping rate coputation methods
+			// ====================================
 			int activeShippingMethodCount = 0;
 
 			try
@@ -691,7 +628,8 @@ namespace SmartStore.Admin.Controllers
 				});
 			}
 
-            //payment methods
+			// Payment methods
+			// ====================================
 			int activePaymentMethodCount = 0;
 
 			try
@@ -717,7 +655,8 @@ namespace SmartStore.Admin.Controllers
 				});
 			}
 
-            //incompatible plugins
+			// Incompatible plugins
+			// ====================================
 			if (PluginManager.IncompatiblePlugins != null)
 			{
 				foreach (var pluginName in PluginManager.IncompatiblePlugins)
@@ -730,8 +669,9 @@ namespace SmartStore.Admin.Controllers
 				}
 			}
 
-            //validate write permissions (the same procedure like during installation)
-            var dirPermissionsOk = true;
+			// Validate write permissions (the same procedure like during installation)
+			// ====================================
+			var dirPermissionsOk = true;
 			var dirsToCheck = FilePermissionHelper.GetDirectoriesWrite(_services.WebHelper);
 			foreach (string dir in dirsToCheck)
 			{
@@ -808,6 +748,8 @@ namespace SmartStore.Admin.Controllers
 
 			try
 			{
+				GC.Collect();
+				GC.WaitForPendingFinalizers();
 				GC.Collect();
 				await Task.Delay(500);
 				NotifySuccess(T("Admin.System.SystemInfo.GarbageCollectSuccessful"));
@@ -895,7 +837,7 @@ namespace SmartStore.Admin.Controllers
 			{
 				appPath + @"Content\files\exportimport\",
 				appPath + @"Exchange\",
-				appPath + @"App_Data\ExportProfiles\"
+				appPath + @"App_Data\Tenants\{0}\ExportProfiles\".FormatInvariant(DataSettings.Current.TenantName)
 			};
 
 			foreach (var path in paths)
@@ -944,7 +886,7 @@ namespace SmartStore.Admin.Controllers
 				.Select(x => x.FolderName)
 				.ToList();
 
-			var infoImportProfiles = new DirectoryInfo(CommonHelper.MapPath("~/App_Data/ImportProfiles"));
+			var infoImportProfiles = new DirectoryInfo(CommonHelper.MapPath(DataSettings.Current.TenantPath + "/" + "ImportProfiles"));
 
 			foreach (var infoSubFolder in infoImportProfiles.GetDirectories())
 			{
@@ -1013,10 +955,26 @@ namespace SmartStore.Admin.Controllers
 			this.NotifySuccess(_localizationService.GetResource("Admin.Common.TaskSuccessfullyProcessed"));
 
 			if (previousUrl.HasValue())
+			{
 				return Redirect(previousUrl);
+			}
 
-            return RedirectToAction("Index", "Home");
+			return RedirectToAction("Index", "Home");
         }
+
+		public ActionResult ClearDatabaseCache(string previousUrl)
+		{
+			_dbCache.Clear();
+
+			this.NotifySuccess(_localizationService.GetResource("Admin.Common.TaskSuccessfullyProcessed"));
+
+			if (previousUrl.HasValue())
+			{
+				return Redirect(previousUrl);
+			}			
+
+			return RedirectToAction("Index", "Home");
+		}
 
 		public ActionResult RestartApplication(string previousUrl)
         {
@@ -1031,11 +989,11 @@ namespace SmartStore.Admin.Controllers
             return RedirectToAction("Index", "Home");
         }
 
-        #endregion
+		#endregion
 
-        #region Generic Attributes
+		#region Generic Attributes
 
-        [ChildActionOnly]
+		[ChildActionOnly]
         public ActionResult GenericAttributes(string entityName, int entityId)
         {
             ViewBag.EntityName = entityName;
